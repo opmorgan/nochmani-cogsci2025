@@ -1,0 +1,996 @@
+---
+title: "BAS/asymmetry correlation analyses"
+author: "Anonymous"
+date: today
+language: 
+  title-block-author-single: "Author"
+  title-block-published: "Updated"
+format: 
+  html:
+    code-fold: true
+    toc: true
+    toc-location: left
+    toc-title: 'Contents'
+    toc-expand: 3
+    theme: [default, style.scss]
+    self-contained: true
+editor: source
+project:
+     execute-dir: project
+---
+
+```{r lib}
+#| output: FALSE
+library(here)
+library(tidyverse)
+library(knitr) #include_graphics
+library(ggbeeswarm)
+library(plotly)
+library(broom)
+library(ppcor)
+# Kim, S. (2015) ppcor: An R Package for a Fast Calculation to Semi-partial Correlation Coefficients. Communications for Statistical Applications and Methods, 22(6), 665-674.
+library(gt)
+library(lme4)
+library(emmeans)
+
+source(here::here("lib", "util.R"))
+```
+
+```{r config}
+#| output: FALSE
+## Config
+DO_PLOTS = T
+FIG_DIR <- here::here("figs", "roi", "1b_analyze_cor")
+ROI_INPUT_DIR <- here::here("analysis_roi", "roi_scores")
+
+## Plot colors
+plot_colors <- c("#EE6677",
+                 "#4477AA",
+                 "#CCBB44",
+                 "#66CCEE",
+                 "#AA3377",
+                 "#228833",
+                 "#BBBBBB")
+
+plot_purple <- "#996F91" ## In between plot colors one and two
+```
+
+
+```{r}
+#| output: FALSE
+#### Load and clean ROI and survey data
+
+## Load and clean the roi score data (con)
+load_roi_scores = function(roi_scores_path) {
+  roi_data_raw = readr::read_csv( roi_scores_path )
+}
+asymmetry_data <- load_roi_scores(here::here(ROI_INPUT_DIR, "roi_scores_con.csv"))
+
+roi_asym <- asymmetry_data |>
+  # Parse Region and Side from ROI
+  mutate(
+    Region = case_when(
+      grepl("Dorsolateral", ROI) ~ "Dorsolateral",
+      grepl("Orbital_Frontal", ROI) ~ "Orbital Frontal",
+      TRUE ~ NA_character_
+    ),
+    Side = case_when(
+      grepl("_L_", ROI) ~ "Left",
+      grepl("_R_", ROI) ~ "Right",
+      TRUE ~ NA_character_
+    ),
+    # Assign Motivation
+    Motivation = case_when(
+      grepl("approach", Contrast, ignore.case = TRUE) ~ "Approach",
+      grepl("avoid", Contrast, ignore.case = TRUE) ~ "Avoidance",
+      TRUE ~ NA_character_
+    ),
+    # Assign Valence
+    Valence = case_when(
+      grepl("pos", Contrast, ignore.case = TRUE) ~ "Positive",
+      grepl("neg", Contrast, ignore.case = TRUE) ~ "Negative",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  # Filter to retain only the desired contrasts
+  filter(
+    Contrast %in% c(
+      "approach-pos > baseline", "approach-neg > baseline",
+      "avoid-pos > baseline", "avoid-neg > baseline",
+      "approach > baseline", "avoid > baseline",
+      "pos > baseline", "neg > baseline"
+    )
+  ) |>
+  # Calculate Asymmetry_Score
+  group_by(Subject, Region, Contrast) |>
+  summarise(
+    Asymmetry_Score = sum(ifelse(Side == "Right", Mean_Value, -Mean_Value), na.rm = TRUE),
+    Motivation = first(Motivation),
+    Valence = first(Valence)
+  ) |>
+  ungroup() |>
+  dplyr::select(Subject, Region, Asymmetry_Score, Contrast, Motivation, Valence) |>
+  ## Make Motivation and Valence factors, control order
+  mutate(
+    Motivation = as.factor(Motivation) |>
+      fct_relevel("Approach", "Avoidance"),
+    Valence = as.factor(Valence) |>
+      fct_relevel("Positive", "Negative")
+  ) |>
+  ## Make Contrast a factor; control order
+  ## Reorder so that facets go in this order:
+  ## approach-pos; approach-neg; approach;
+  ## avoid-pos; avoid-neg; avoid;
+  ## pos; neg
+  mutate(
+    Contrast = as.factor(Contrast) |>
+      fct_relevel(
+        "approach-pos > baseline", "approach-neg > baseline", "approach > baseline",
+        "avoid-pos > baseline", "avoid-neg > baseline", "avoid > baseline",
+        "pos > baseline", "neg > baseline"
+      )
+  )
+
+
+# Inspect the cleaned dataset
+print("Cleaned ROI Data:")
+print(head(roi_asym))
+
+## Load the survey data
+survey <- read_csv(here("data", "proc", "redcap.csv"))
+
+## Clean the survey data
+survey_clean <- survey |> mutate(
+  subject_number_label = subject_id |> str_pad(3, pad = "0"),
+  Subject = str_c("sub-", subject_number_label)
+) |> 
+  dplyr::select(Subject, everything(), -subject_id, subject_number_label) |> 
+# Filter to right handers
+  filter(EHI > 40) |> 
+  # Rename BAS subscores to be shorter
+  rename(BAS_Fun = BAS_Fun_Seeking,
+         BAS_Reward = BAS_Reward_Responsiveness) |> 
+  # Calculate total BAS score
+  mutate(BAS_Total = BAS_Drive + BAS_Fun + BAS_Reward) |> 
+  dplyr::select(Subject, BAS_Total, everything())
+
+
+
+
+## Combine survey and roi data
+combo_all <- roi_asym |> left_join(survey_clean) # All subjects (n = 23)
+combo <- survey_clean |> left_join(roi_asym) # Only subjects with survey data (n = 21)
+```
+
+
+# Does BIS/BAS correlate with asymmetry?
+
+Negative effect estimates mean that higher survey scores correlate with more leftward asymmetry.
+
+
+```{r}
+#| output: FALSE
+## Prepare data for correlation tests.
+##  Subset to DLPFC
+cor_data <- combo |> filter(Region == "Dorsolateral") |> 
+  ## Reorder columns
+  dplyr::select(Subject, Region, Contrast, Motivation, Valence, Asymmetry_Score, everything())
+```
+
+```{r}
+## Create function to make plots (Simple correlation lines)
+make_cor_simple_plot <- function(cor_data, 
+                          bas_var = "BAS_Total", 
+                          fig_path_var = here("figs", "roi", "1b_analyze_cor"),
+                          plot_colors = c("#EE6677", "#4477AA", "#CCBB44",
+                                          "#66CCEE", "#AA3377", "#228833", "#BBBBBB")
+                          ) {
+  
+## Specify x label
+if (bas_var == "BAS_Total") {y_label = "BAS (Total)"}
+if (bas_var == "BAS_Drive") {y_label = "BAS (Drive)"}
+if (bas_var == "BAS_Fun") {y_label = "BAS (Fun-seeking)"}
+if (bas_var == "BAS_Reward") {y_label = "BAS (Reward Responsiveness)"}
+if (bas_var == "BIS") {y_label = "BIS"}
+g <- cor_data |> ggplot(aes(y = .data[[bas_var]], x = Asymmetry_Score, color = Motivation)) +
+  geom_vline(xintercept = 0,
+             color = "gray75",
+             linewidth = .5) +
+  geom_smooth(
+    method = "lm",
+    #color = "gray70",
+    linewidth = .5,
+    alpha = .1,
+    show.legend = F
+  ) +
+  geom_point(alpha = .3, show.legend = F) +
+  facet_wrap(~ Contrast) +
+  ylab(y_label) +
+  xlab("fMRI BOLD Asymmetry") +
+  labs(title = "Correlation between DLPFC Asymmetry and Trait Approach") +
+  # Custom Color Scale for Motivation
+  scale_color_manual(values = plot_colors)
+  g <- g |> gg_style() +
+    theme(legend.position = "bottom")
+  ggsave(fig_path_var, g, "png", height = 5, width = 5, dpi = 300)
+}
+
+## DEBUG: make plot without function
+# g <- cor_data |> ggplot(aes(y = .data[[bas_var]], x = Asymmetry_Score, color = Motivation)) +
+#   geom_vline(xintercept = 0,
+#              color = "gray75",
+#              linewidth = .5) +
+#   geom_smooth(
+#     method = "lm",
+#     #color = "gray70",
+#     linewidth = .5,
+#     alpha = .1,
+#     show.legend = F
+#   ) +
+#   
+#   geom_point(alpha = .3, show.legend = FALSE) +
+#   facet_wrap( ~ Contrast) +
+#   ylab("Asymmetry Score") +
+#   # Custom Color Scale for Motivation
+#   scale_color_manual(values = plot_colors)
+# 
+# g <- g |> gg_style()
+# 
+# g + ylab("Behavioral Activation Scale (Total)") +
+#   xlab("fMRI BOLD Asymmetry")
+```
+
+## Model with covariates: ROI Asymmetry ~ BAS + BIS
+
+::: panel-tabset
+
+### BAS (Total, subscores)
+
+::: panel-tabset
+
+<!-- Prepare stats: -->
+```{r}
+init_pcor_table <- tibble(
+  bas_var = as.character(),
+  contrast =as.character(),
+  stat_method = as.character(),
+  estimate = as.numeric(),
+  std.error = as.numeric(),
+  p.value = as.numeric(),
+  statistic = as.numeric(),
+  n = as.integer(),
+  gp = as.numeric(),
+)
+pcor_table = init_pcor_table
+
+## Loop through BAS vars (Total, Drive, etc)
+bas_vars <- c("BAS_Total", "BAS_Drive", "BAS_Fun", "BAS_Reward")
+
+for (bas_var in bas_vars) {
+## Loop through contrast conditions
+contrast_vars <- cor_data |> pull(Contrast) |> unique()
+for (contrast_var in contrast_vars) {
+model_data <- cor_data |> filter(Contrast == contrast_var)
+
+## Partial correlation between BAS_[Total] and Asym, given BIS
+## (A) using pcor to find rho:
+# Here, "estimate" is a partial correlation coefficient, rho.
+pcor_row <- pcor.test(
+  model_data[[bas_var]],
+  model_data[["Asymmetry_Score"]],
+  model_data[["BIS"]],
+) |> as_tibble() |> 
+  mutate(
+    bas_var = bas_var,
+    contrast = contrast_var,
+    stat_method = "pcor (pearson)") |> 
+  dplyr::select(bas_var, contrast, stat_method, everything(), -Method)
+
+## (B) using emmeans to find effect size:
+## Here, "estimate" is the effect size -- how much change in con for one unit of BAS?
+formula_dynamic <- as.formula(paste0("Asymmetry_Score~", bas_var, " + BIS"))
+bas_model <- lm(formula = formula_dynamic,
+                data = model_data)
+summary(bas_model) |> tidy()
+emmeans_row <- summary(bas_model) |> tidy() |> 
+  filter(term == bas_var) |>  # What does this do?
+  mutate(
+    bas_var = bas_var,
+    contrast = contrast_var,
+    stat_method = "emmeans") |> 
+  dplyr::select(bas_var, contrast, stat_method, everything(), -term)
+
+pcor_table <- pcor_table |> bind_rows(emmeans_row, pcor_row)
+}
+}
+
+pcor_table_bas <- pcor_table
+```
+
+#### Stats (emmeans)
+```{r}
+#| warning: false
+stat_method_var = "emmeans"
+pcor_table |> filter(stat_method == stat_method_var) |> 
+  dplyr::select(-stat_method) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table(
+    str_c("Model with covariates: Asym ~ BAS{*} + BIS (Method: ", stat_method_var, ")"),
+    groupname_col = "bas_var") |> 
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+    # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin(
+                                      bins = 3,
+                                      na.color = "#f7f7f7",
+                                      palette = c(
+                                                  "#b8e186",
+                                                  "#f7f7f7",
+                                                  "#f1b6da"
+                                                  ),
+                                      domain = c(-1, 1))
+  )
+```
+
+#### Stats (pcor)
+```{r}
+#| warning: false
+stat_method_var = "pcor (pearson)"
+pcor_table |> filter(stat_method == stat_method_var) |> 
+  dplyr::select(-stat_method) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table(
+    str_c("Model with covariates: Asym ~ BAS{*} + BIS (Method: ", stat_method_var, ")"),
+    groupname_col = "bas_var") |> 
+  tab_footnote("p-values are one-sided. \"Estimate\" is the partial correlation coefficient, rho.", locations = NULL) |> 
+    # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin(
+                                      bins = 3,
+                                      na.color = "#f7f7f7",
+                                      palette = c(
+                                                  "#b8e186",
+                                                  "#f7f7f7",
+                                                  "#f1b6da"
+                                                  ),
+                                      domain = c(-1, 1))
+  )
+```
+
+:::
+
+
+### BIS
+
+::: panel-tabset
+
+<!-- Prepare stats: -->
+
+```{r}
+init_pcor_table <- tibble(
+  contrast =as.character(),
+  stat_method = as.character(),
+  estimate = as.numeric(),
+  std.error = as.numeric(),
+  p.value = as.numeric(),
+  statistic = as.numeric(),
+  n = as.integer(),
+  gp = as.numeric(),
+)
+pcor_table = init_pcor_table
+
+contrast_vars <- cor_data |> pull(Contrast) |> unique()
+for (contrast_var in contrast_vars) {
+model_data <- cor_data |> filter(Contrast == contrast_var,)
+
+## Partial correlation between BAS_[Total] and Asym, given BIS
+## (A) using pcor to find rho:
+# Here, "estimate" is a partial correlation coefficient, rho.
+pcor_row <- pcor.test(
+  model_data[["BIS"]],
+  model_data[["Asymmetry_Score"]],
+  model_data[["BAS_Total"]],
+) |> as_tibble() |> 
+  dplyr::mutate(
+    contrast = contrast_var,
+    stat_method = "pcor (pearson)") |> 
+  dplyr::select(contrast, stat_method, everything(), -Method)
+
+## (B) using emmeans to find effect size:
+## Here, "estimate" is the effect size -- how much change in con for one unit of BAS?
+bas_model <- lm(formula = Asymmetry_Score ~ BAS_Total + BIS,
+                data = model_data)
+summary(bas_model) |> tidy()
+emmeans_row <- summary(bas_model) |> tidy() |> 
+  filter(term == "BIS") |> 
+  dplyr::mutate(
+    contrast = contrast_var,
+    stat_method = "emmeans") |> 
+  dplyr::select(contrast, stat_method, everything(), -term)
+
+pcor_table <- pcor_table |> bind_rows(emmeans_row, pcor_row)
+}
+
+pcor_table_bis <- pcor_table
+```
+
+#### Stats (emmeans)
+```{r}
+#| warning: false
+stat_method_var = "emmeans"
+pcor_table |> filter(stat_method == stat_method_var) |>
+  dplyr::select(-stat_method) |>
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(str_c(
+    "BIS: Model with covariates: Asym ~ BAS{*} + BIS (Method: ",
+    stat_method_var,
+    ")"
+  )) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin(
+                                      bins = 3,
+                                      na.color = "#f7f7f7",
+                                      palette = c(
+                                                  "#b8e186",
+                                                  "#f7f7f7",
+                                                  "#f1b6da"
+                                                  ),
+                                      domain = c(-1, 1))
+  )
+```
+
+#### Stats (pcor)
+```{r}
+#| warning: false
+stat_method_var = "pcor (pearson)"
+pcor_table |> filter(stat_method == stat_method_var) |>
+  dplyr::select(-stat_method) |>
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(str_c(
+    "BIS: Model with covariates: Asym ~ BAS{*} + BIS (Method: ",
+    stat_method_var,
+    ")"
+  )) |>
+  tab_footnote("p-values are one-sided. \"Estimate\" is the partial correlation coefficient, rho.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin(
+                                      bins = 3,
+                                      na.color = "#f7f7f7",
+                                      palette = c(
+                                                  "#b8e186",
+                                                  "#f7f7f7",
+                                                  "#f1b6da"
+                                                  ),
+                                      domain = c(-1, 1))
+  )
+```
+
+:::
+
+:::
+
+
+
+## Simple correlation: ROI asymmetry ~ BAS/BIS
+
+::: panel-tabset
+
+### BAS (Total, subscores) and BIS
+
+::: panel-tabset
+
+<!-- Prepare plots: -->
+```{r}
+#| warning: false
+bas_vars <- c("BAS_Total", "BAS_Drive", "BAS_Fun", "BAS_Reward", "BIS")
+for (bas_var in bas_vars) {
+  fig_path_var <- here::here(FIG_DIR, paste0("cor_simple_", bas_var, ".png"))
+if (DO_PLOTS == T) {make_cor_simple_plot(cor_data, bas_var = bas_var, fig_path_var = fig_path_var)}
+}
+```
+
+```{r}
+## DEBUG: make plot without function
+# g <- cor_data |> ggplot(aes(x = .data[[bas_var]], y = Asymmetry_Score, color = Motivation)) +
+#   geom_smooth(
+#     method = "lm",
+#     #color = "gray70",
+#     linewidth = .5,
+#     alpha = .1,
+#     show.legend = F
+#   ) +
+#   geom_point(alpha = .3, show.legend = FALSE) +
+#   facet_wrap(~ Contrast) +
+#   ylab("Asymmetry Score") +
+#   # Custom Color Scale for Motivation
+#   scale_color_manual(values = plot_colors)
+# 
+# g <- g |> gg_style()
+# 
+# g + xlab("Behavioral Activation Scale (Total)")
+```
+
+#### Plots
+
+##### BAS Total
+
+```{r}
+include_graphics(here::here(FIG_DIR, paste0("cor_simple_", "BAS_Total", ".png")))
+```
+
+##### BAS Drive
+```{r}
+include_graphics(here::here(FIG_DIR, paste0("cor_simple_", "BAS_Drive", ".png")))
+```
+
+##### BAS Reward
+```{r}
+include_graphics(here::here(FIG_DIR, paste0("cor_simple_", "BAS_Reward", ".png")))
+```
+
+##### BAS Fun
+```{r}
+include_graphics(here::here(FIG_DIR, paste0("cor_simple_", "BAS_Fun", ".png")))
+```
+
+##### BIS
+```{r}
+include_graphics(here::here(FIG_DIR, paste0("cor_simple_", "BIS", ".png")))
+```
+
+<!-- Prepare stats: -->
+
+```{r}
+init_cor_table <- tibble(
+  bas_var = as.character(),
+  contrast = as.character(),
+  stat_method = as.character(),
+  estimate = as.numeric(),
+  conf.low = as.numeric(),
+  conf.high = as.numeric(),
+  p.value = as.numeric(),
+  statistic = as.numeric(),
+  patameter = as.numeric()
+)
+cor_table = init_cor_table
+
+contrast_vars <- cor_data |> pull(Contrast) |> unique()
+bas_vars <- c("BAS_Total", "BAS_Drive", "BAS_Fun", "BAS_Reward", "BIS")
+
+##DEBUG
+contrast_var <-  "approach > baseline"
+bas_var <- "BAS_Total"
+
+for (bas_var in bas_vars) {
+  for (contrast_var in contrast_vars) {
+    model_data <- cor_data |> filter(Contrast == contrast_var)
+cor_test <- cor.test(x = model_data[[bas_var]], y = model_data[["Asymmetry_Score"]],
+                     method = "pearson",
+                     ## This will give confidence intervals for alpha = .05, two-sided
+                     conf.level = .95,
+                     alternative = "two.sided"
+                     ) |> 
+  tidy()
+cor_row <- cor_test |> mutate(
+  bas_var = bas_var,
+  contrast = contrast_var,
+  stat_method = "Simple correlation (pearson)"
+) |> 
+  dplyr::select(-alternative, -method)
+
+cor_table <- cor_table |> bind_rows(cor_row)
+  }
+}
+```
+
+#### Stats
+```{r}
+#| warning: false
+stat_method_var = "Simple correlation (pearson)"
+cor_table |> filter(stat_method == stat_method_var) |>
+  dplyr::select(-stat_method) |>
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c(stat_method_var, ": Asym ~ BIS/BAS"),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided. \"Estimate\" is the simple correlation coefficient, rho.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin(
+                                      bins = 3,
+                                      na.color = "#f7f7f7",
+                                      palette = c(
+                                                  "#b8e186",
+                                                  "#f7f7f7",
+                                                  "#f1b6da"
+                                                  ),
+                                      domain = c(-1, 1))
+  )
+```
+
+:::
+
+:::
+
+## Interaction of Motivation and BAS: ROI asymmetry ~ BAS * Motivation
+
+Is the correlation between BAS and asymmetry different for approach vs. avoidance?
+
+Is the correlation between BAS and asymmetry different for positive vs. negative valence?
+
+Is the effect of Motivation stronger in one Valence condition than the other (or vice versa)? (Do we see an interaction of Motivation * Valence * BAS?)
+
+::: panel-tabset :::
+
+```{r}
+## Prepare data for interaction models
+## Subst to four conditions of interest
+model_data <- cor_data |> 
+  filter(Motivation %in% c("Approach", "Avoidance"),
+         Valence %in% c("Positive", "Negative"))
+
+## Prepare model with interaction of motivation * valence * Bas
+lm_nobis <- lmer(data = model_data,
+     formula = Asymmetry_Score ~ BAS_Total * Motivation * Valence + (1 | Subject))
+
+## Prepare model with BIS as well
+## (Model the interaction of BIS with Motivation and Valence)
+lm_bis <- lmer(formula = Asymmetry_Score ~ BAS_Total * Motivation * Valence + BIS * Motivation * Valence + (1| Subject),
+                data = model_data)
+
+bis_model_label <- "Asym ~ BAS * Mot * Val + BIS * Mot * Val + 1|subject"
+nobis_model_label <- "Asym ~ Bas * Mot * Val + 1|subject"
+```
+
+### Describe
+
+```{r}
+## DEBUG
+## Reproduce results from model with bis
+pcor_table_bas |> 
+  filter(bas_var == "BAS_Total",
+         stat_method == "emmeans") |> 
+  filter(contrast %in% c(
+      "approach-pos > baseline", "approach-neg > baseline",
+      "avoid-pos > baseline", "avoid-neg > baseline"
+  )) |> 
+  dplyr::select(-stat_method) |>
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Sanity check: Results from model Asym ~ BAS + BIS, with data filtered by contrast"),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+```{r}
+## Show estimated slope for each of the four conditions
+# lm_int |> emmeans(specs = c("Motivation", "Valence")) |>
+#  summary(infer = T)
+
+## The estimate "emmean" shows the mean asymmetry score estimated. We want to look at
+## The estimated relatinoship between BAS_Total and Asymmetry_Score
+bis_emt <- emtrends(lm_bis, pairwise ~ Motivation*Valence, var = "BAS_Total")
+bis_emt[[1]] |> summary(infer = T, level = .95) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with BIS: ", bis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(BAS_Total.trend),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+
+bis_emt <- emtrends(lm_nobis, pairwise ~ Motivation*Valence, var = "BAS_Total")
+# 95% CI will give appropriate bounds for 2-sided tests
+bis_emt[[1]] |> summary(infer = T, level = .95) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model without BIS: ", nobis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(BAS_Total.trend),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+```{r}
+#| warning: false
+## Show estimated slope for Approach, and for avoidance:
+## The estimate "emmean" shows the mean asymmetry score estimated. We want to look at
+## The estimated relatinoship between BAS_Total and Asymmetry_Score
+bis_emt <- emtrends(lm_bis, pairwise ~ Motivation, var = "BAS_Total")
+bis_emt[[1]] |> summary(infer = T, level = .95) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with BIS: ", bis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(BAS_Total.trend),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+
+bis_emt <- emtrends(lm_nobis, pairwise ~ Motivation, var = "BAS_Total")
+# 95% CI will give appropriate bounds for 2-sided tests
+bis_emt[[1]] |> summary(infer = T, level = .95) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model without BIS: ", nobis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(BAS_Total.trend),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+```{r}
+#| warning: false
+## Show estimated slope for Positive, and Negative:
+## Show estimated slope for Approach, and for avoidance:
+## The estimate "emmean" shows the mean asymmetry score estimated. We want to look at
+## The estimated relatinoship between BAS_Total and Asymmetry_Score
+bis_emt <- emtrends(lm_bis, pairwise ~ Valence, var = "BAS_Total")
+bis_emt[[1]] |> summary(infer = T, level = .95) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with BIS: ", bis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(BAS_Total.trend),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+
+bis_emt <- emtrends(lm_nobis, pairwise ~ Valence, var = "BAS_Total")
+# 95% CI will give appropriate bounds for 2-sided tests
+bis_emt[[1]] |> summary(infer = T, level = .95) |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model without BIS: ", nobis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(BAS_Total.trend),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+
+### Test
+
+Is the correlation between BAS and asymmetry different for approach vs. avoidance?
+```{r}
+#| warning: false
+## Is the correlation between BAS and asymmetry different for approach vs. avoidance?
+
+## Show difference in estimated slope for approach, versus avoidance:
+bis_emt <- emtrends(lm_bis, pairwise ~ Motivation, var = "BAS_Total")
+# rt_emt[[1]] |> contrast(interaction = c("consec"), var = "ehi") |> 
+bis_emt[[1]] |> 
+  contrast(interaction = c("consec"), var = "BAS_Total") |> 
+  summary(infer = T, level = .95) |> 
+  as_tibble() |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with BIS: ", bis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+
+bis_emt <- emtrends(lm_nobis, pairwise ~ Motivation, var = "BAS_Total")
+# rt_emt[[1]] |> contrast(interaction = c("consec"), var = "ehi") |> 
+bis_emt[[1]] |> 
+  contrast(interaction = c("consec"), var = "BAS_Total") |> 
+  summary(infer = T, level = .95) |> 
+  as_tibble() |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with no BIS: ", nobis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+Is the correlation between BAS and asymmetry different for positive vs. negative valence?
+```{r}
+#| warning: false
+## Is the correlation between BAS and asymmetry difference for positive vs. negative valence?
+
+## Show difference in estimated slope for Positive, versus Negative valence:
+bis_emt <- emtrends(lm_bis, pairwise ~ Valence, var = "BAS_Total")
+# rt_emt[[1]] |> contrast(interaction = c("consec"), var = "ehi") |> 
+bis_emt[[1]] |> 
+  contrast(interaction = c("consec"), var = "BAS_Total") |> 
+  summary(infer = T, level = .95) |> 
+  as_tibble() |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with BIS: ", bis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+
+bis_emt <- emtrends(lm_nobis, pairwise ~ Valence, var = "BAS_Total")
+# rt_emt[[1]] |> contrast(interaction = c("consec"), var = "ehi") |> 
+bis_emt[[1]] |> 
+  contrast(interaction = c("consec"), var = "BAS_Total") |> 
+  summary(infer = T, level = .95) |> 
+  as_tibble() |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with no BIS: ", nobis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+Is the effect of Motivation stronger in one Valence condition than the other (or vice versa)? (Do we see an interaction of Motivation * Valence * BAS?)
+```{r}
+#| warning: false
+## Is the laterality effect stronger for Motivation than for Valence? (Do we see an interaction of Motivation * Valence * BAS?)
+
+bis_emt <- emtrends(lm_bis, pairwise ~ Motivation*Valence, var = "BAS_Total")
+# rt_emt[[1]] |> contrast(interaction = c("consec"), var = "ehi") |> 
+bis_emt[[1]] |> 
+  contrast(interaction = c("consec"), var = "BAS_Total") |> 
+  summary(infer = T, level = .95) |> 
+  as_tibble() |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with BIS: ", bis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+
+bis_emt <- emtrends(lm_nobis, pairwise ~ Motivation*Valence, var = "BAS_Total")
+# rt_emt[[1]] |> contrast(interaction = c("consec"), var = "ehi") |> 
+bis_emt[[1]] |> 
+  contrast(interaction = c("consec"), var = "BAS_Total") |> 
+  summary(infer = T, level = .95) |> 
+  as_tibble() |> 
+  ## Convert p-values to one-sided
+  mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table(
+    str_c("Model with no BIS: ", nobis_model_label),
+    groupname_col = "bas_var"
+  ) |>
+  tab_footnote("p-values are one-sided, \"Estimate
+  \" is the effect size: change in normalized contrast value per raw survey score unit.", locations = NULL) |> 
+  # Color effect sizes: negative (predicted direction for approach) effects should be green:
+  data_color(
+             columns = c(estimate),
+             colors = scales::col_bin( bins = 3, na.color = "#f7f7f7",
+                                      palette = c( "#b8e186", "#f7f7f7", "#f1b6da" ),
+                                      domain = c(-1, 1))
+  )
+```
+
+:::

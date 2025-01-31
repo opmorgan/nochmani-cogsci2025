@@ -1,0 +1,17 @@
+condition	onset	duration
+baseline	0	11.1
+avoid-neg	15.1	20
+baseline	35.3	12.8
+avoid-pos	52.1	20
+baseline	72.2	12.6
+avoid-neg	88.9	20
+baseline	109	10.2
+approach-neg	123.2	20
+baseline	143.4	13.6
+approach-neg	161	20
+baseline	181.1	10.9
+approach-pos	196.1	20
+baseline	216.2	12.8
+approach-neg	233.1	20
+baseline	253.3	13.2
+approach-pos	270.5	20

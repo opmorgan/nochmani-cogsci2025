@@ -1,0 +1,1387 @@
+---
+title: "Laterality of Motivation and Valence"
+author: "Anonymous"
+language: 
+  title-block-author-single: "Author"
+  title-block-published: "Updated"
+format: 
+  html:
+    code-fold: true
+    toc: true
+    toc-location: left
+    toc-title: 'Contents'
+    toc-expand: 3
+    theme: [default, style.scss]
+    self-contained: true
+    grid: 
+      body-width: 1000px
+editor: source
+project:
+     execute-dir: project
+execute: 
+  warning: false
+  message: false
+  echo: false
+---
+
+
+```{r, results='hide', message=FALSE}
+# Load Required Libraries
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(emmeans)
+library(lmerTest) #for emmeans' inferential tests
+library(pbkrtest) #for emmeans' inferential tests
+library(here)
+library(gt)
+library(stringr)
+library(lme4)
+library(knitr)
+library(testthat) #for util.R
+library(forcats) #for chr to factor
+source(here::here("lib", "util.R"))
+library(Hmisc)
+```
+
+```{r}
+ROI_INPUT_DIR <- here::here("analysis_roi", "roi_scores")
+FIG_DIR <- here::here("figs", "roi", "1a_analyze")
+```
+
+```{r, results='hide', message=FALSE}
+# STEP 1: Load the Data
+load_roi_scores = function(roi_scores_path) {
+  roi_data_raw = readr::read_csv( roi_scores_path )
+}
+asymmetry_data <- load_roi_scores(here::here(ROI_INPUT_DIR, "roi_scores_con.csv"))
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+# STEP 2: Prepare the Data
+side_data <- asymmetry_data %>%
+  # Parse Region and Side from ROI
+  dplyr::mutate(
+    Region = case_when(
+      grepl("Dorsolateral", ROI) ~ "Dorsolateral",
+      grepl("Orbital_Frontal", ROI) ~ "Orbital Frontal",
+      TRUE ~ NA_character_
+    ),
+    Side = case_when(
+      grepl("_L_", ROI) ~ "Left",
+      grepl("_R_", ROI) ~ "Right",
+      TRUE ~ NA_character_
+    ),
+    # Assign Motivation
+    Motivation = case_when(
+      grepl("approach", Contrast, ignore.case = TRUE) ~ "Approach",
+      grepl("avoid", Contrast, ignore.case = TRUE) ~ "Avoidance",
+      TRUE ~ NA_character_
+    ),
+    # Assign Valence
+    Valence = case_when(
+      grepl("pos", Contrast, ignore.case = TRUE) ~ "Positive",
+      grepl("neg", Contrast, ignore.case = TRUE) ~ "Negative",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  # Filter to retain only the desired contrasts
+  filter(
+    Contrast %in% c(
+      "approach-pos > baseline", "approach-neg > baseline",
+      "avoid-pos > baseline", "avoid-neg > baseline",
+      "approach > baseline", "avoid > baseline"
+    )
+  )
+  # Calculate Asymmetry_Score
+ roi_asym <- side_data|> group_by(Subject, Region, Contrast) %>%
+  summarise(
+    Asymmetry_Score = sum(ifelse(Side == "Right", Mean_Value, -Mean_Value), na.rm = TRUE),
+    Motivation = first(Motivation),
+    Valence = first(Valence)
+  ) %>%
+  ungroup()
+
+# Remove the Contrast column and retain Motivation and Valence
+roi_asym_cleaned <- roi_asym %>%
+  select(Subject, Region, Asymmetry_Score, Contrast, Motivation, Valence)
+
+## Make Motivation and Valence factors, control order
+roi_asym_cleaned <- roi_asym_cleaned |> 
+  dplyr::mutate(Motivation = as.factor(Motivation) |> 
+           fct_relevel("Approach", "Avoidance"),
+         Valence = as.factor(Valence) |> 
+           fct_relevel("Positive", "Negative"))
+
+# Inspect the cleaned dataset
+# print("Cleaned ROI Data:")
+# print(head(roi_asym_cleaned))
+```
+
+```{r}
+## Prepare side data for analyses
+side_data_cleaned <- side_data |> 
+    filter(
+    #Region == "Dorsolateral",
+    Valence %in% c("Positive", "Negative")
+  ) %>%
+  # Keep only the four relevant contrasts
+  filter(
+    Motivation %in% c("Approach", "Avoidance")
+  ) 
+```
+
+# Laterality of Motivation and Valence, in DLPFC and OFC
+
+::: panel-tabset :::
+
+## DLPFC
+
+::: panel-tabset :::
+
+```{r}
+# STEP 3: DLPFC Analysis
+# Subset data for Dorsolateral and relevant contrasts
+dlpfc_data <- roi_asym_cleaned %>%
+  filter(
+    Region == "Dorsolateral",
+    Valence %in% c("Positive", "Negative")
+  ) %>%
+  # Keep only the four relevant contrasts
+  filter(
+    Motivation %in% c("Approach", "Avoidance")
+  ) %>%
+  # Ensure no duplicates
+  distinct(Subject, Region, Motivation, Valence, .keep_all = TRUE)
+
+
+# Fit the linear mixed-effects model
+dlpfc_model <- lmer(Asymmetry_Score ~ Motivation * Valence + (1 | Subject), data = dlpfc_data)
+```
+
+```{r}
+dlpfc_side_data <- side_data_cleaned |> 
+  filter(Region == "Dorsolateral")
+# dlpfc_side_data ## Each subject (23), each condition (2x2), each side (2) = 184 rows
+
+## Fit model that includes side
+side_dlpfc_model <- lmer(Mean_Value ~ Side * Motivation * Valence + (1 | Subject), data = dlpfc_side_data)
+```
+
+### Main effects and 2-way interaction
+
+- Main effect of Motivation?
+- Main effect of Valence?
+- Interaction of Motivation and Valence?
+- Effect of Motivation within each Valence condition?
+- Effect of Valence within each Motivation condition?
+
+```{r}
+# Main effect of motivation
+# Approach - avoidance: a positive number means that appraoch is more rightward than avoidance; a negative number means that avoidance is more rightward than approach (approach is more leftward)
+
+main_motivation <- dlpfc_model |> emmeans(specs = "Motivation") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+main_motivation |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table(
+    str_c("DLPFC: Main effect of motivation (controlling for valence)"),
+    groupname_col = "bas_var") |> 
+  tab_footnote("p-values are one-sided.  A negative number means that approach is more leftward than avoidance.", locations = NULL)
+```
+
+
+```{r}
+# Main effect of valence
+# Negative - Positive: a negative number means that positive valence is more leftward than negative valence
+main_motivation <- dlpfc_model |> emmeans(specs = "Valence") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+main_motivation |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table(
+    str_c("DLPFC: Main effect of valence (controlling for motivation)"),
+    groupname_col = "bas_var") |> 
+  tab_footnote("p-values are one-sided.A negative number means that positive valence is more leftward than negative valence.", locations = NULL)
+```
+
+```{r}
+## Interaction of Motivation by Valence
+## Compare models with and without interaction
+
+# The full model with the interaction
+dlpfc_model_full <- lmer(Asymmetry_Score ~ Motivation * Valence + (1 | Subject), data = dlpfc_data)
+
+# The reduced model without the interaction
+dlpfc_model_reduced <- lmer(Asymmetry_Score ~ Motivation + Valence + (1 | Subject), data = dlpfc_data)
+
+# Perform an ANOVA to compare the models
+anova_result <- anova(dlpfc_model_reduced, dlpfc_model_full)
+
+# Print the ANOVA result
+anova_result |> rename(p.value = `Pr(>Chisq)`) |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("DLPFC: Interaction of Motivation by Valence (ANOVA model comparison)") |> 
+  tab_footnote("p-values are one-sided.", locations = NULL)
+
+# Compute estimated marginal means (emmeans) for the interaction
+emmeans_interaction <- emmeans(dlpfc_model_full, ~ Motivation * Valence)
+
+# Test significance of the interaction
+interaction_test <- contrast(emmeans_interaction, interaction = "pairwise") |> 
+  summary(infer = T)
+
+# Display the emmeans results
+#print(emmeans_interaction) |> gt(caption = c("Estimated Marginal Means for the Interaction (Dorsolateral)","Note: Positive Estimates Indicate Rightward Asymmetry"))
+
+# Display the interaction results
+interaction_test |> as_tibble() |> 
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("DLPFC: Interaction of Motivation by Valence (emmeans: compare estimate to zero)") |>
+    tab_footnote(
+      "p-values are one-sided. A positive estimate means that approach vs. avoidance motivation is more leftward than positive vs. negative valence",
+    locations = NULL)
+```
+
+```{r}
+## Effect of Motivation within each Valence condition
+em <- dlpfc_model |> emmeans(specs = "Motivation", by = "Valence") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+em |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table( str_c("DLPFC: Effect of Motivation by Valence condition")  )|> 
+  tab_footnote("p-values are one-sided.  A negative number means that approach is more leftward than avoidance.", locations = NULL)
+```
+
+```{r}
+## Effect of Valence within each Motivation condition
+em <- dlpfc_model |> emmeans(specs = "Valence", by = "Motivation") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+em |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table( str_c("DLPFC: Effect of Valence by Motivation condition")  )|> 
+  tab_footnote("p-values are one-sided.  A negative number means that positive valence is more leftward than negative valence.", locations = NULL)
+```
+
+
+### Estimated Asymmetry scores by condition
+
+Estimate:
+
+- What is the asymmetry score for Approach motivation?
+- What is the asymmetry score for Avoidance motivation?
+- What is the asymmetry score for Positive Valence?
+- What is the asymmetry score for Negative Valence?
+
+- What is the asymmetry score for Approach-Positive?
+- What is the asymmetry score for Approach-Negative?
+- What is the asymmetry score for Avoid-Positive?
+- What is the asymmetry score for Avoid-Negative?
+
+```{r}
+## Pull Asymmetry scores for Approach and Avoidance Motivation
+# Estimate laterality of approach, and avoidance
+summary(emmeans(dlpfc_model, "Motivation"), infer=TRUE) |>
+  as_tibble() |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("DLPFC: Estimated laterality for Approach and Avoidance") |>
+    tab_footnote(
+      "p-values are one-sided. A positive estimate means rightward asymmetry",
+    locations = NULL)
+```
+
+```{r}
+## Pull Asymmetry scores for Positive and Negative Valence
+# Estimate laterality of postive, and negative valence
+summary(emmeans(dlpfc_model, "Valence"), infer=TRUE) |>
+  as_tibble() |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("DLPFC: Estimated laterality for Positive and Negative Valence") |>
+    tab_footnote(
+      "p-values are one-sided. A positive estimate means rightward asymmetry",
+    locations = NULL)
+```
+
+```{r}
+## Pull asymmetry scores for each of the four conditions
+# Summarize the model (Show the estimated effect for each of the four conditions - approach-pos etc)
+dlpfc_model_summary <- summary(emmeans(dlpfc_model, "Motivation", "Valence"), infer=TRUE)
+dlpfc_model_summary|> 
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("DLPFC: Estimates for each contrast") |>
+  tab_footnote(
+    "p-values are one-sided. Positive estimates indicate rightward asymmetry.",
+    locations = NULL)
+```
+
+Estimate (1 level more granular)
+- What are the right and left ROI scores for Approach motivation?
+- What are the right and left ROI scores for Avoidance motivation?
+- What are the right and left ROI scores for Positive Valence?
+- What are the right and left ROI scores for Negative motivation?
+
+```{r}
+side_dlpfc_model |> emmeans(spec = c("Motivation", "Side")) |> 
+  summary(infer = T) |> 
+    format_p.value() |>
+  pretty_table("DLPFC: Estimated mean ROI signal, by side and motivation condition") |>
+  tab_footnote(
+    "p-values are two-sided. Positive estimates indicate positive BOLD signal.",
+    locations = NULL)
+```
+
+```{r}
+side_dlpfc_model |> emmeans(spec = c("Valence", "Side")) |> 
+  summary(infer = T) |> 
+    format_p.value() |>
+  pretty_table("DLPFC: Estimated mean ROI signal, by side and valence condition") |>
+  tab_footnote(
+    "p-values are two-sided. Positive estimates indicate positive BOLD signal.",
+    locations = NULL)
+```
+
+- What are the right and left ROI scores for Approach-Positive?
+- What are the right and left ROI scores for Approach-Negative?
+- What are the right and left ROI scores for Avoid-Positive?
+- What are the right and left ROI scores for Avoid-Negative?
+
+```{r}
+side_dlpfc_model |> emmeans(spec = c("Motivation", "Valence", "Side")) |> 
+  summary(infer = T) |> 
+  arrange(Motivation, Valence, Side) |> 
+    format_p.value() |>
+  pretty_table("DLPFC: Estimated mean ROI signal, by side, motivation, and valence condition") |>
+  tab_footnote(
+    "p-values are two-sided. Positive estimates indicate positive BOLD signal.",
+    locations = NULL)
+```
+
+:::
+
+## OFC
+
+::: panel-tabset :::
+
+```{r}
+# STEP 3: ofc Analysis
+# Subset data for Orbital Frontal and relevant contrasts
+ofc_data <- roi_asym_cleaned %>%
+  filter(
+    Region == "Orbital Frontal",
+    Valence %in% c("Positive", "Negative")
+  ) %>%
+  # Keep only the four relevant contrasts
+  filter(
+    Motivation %in% c("Approach", "Avoidance")
+  ) %>%
+  # Ensure no duplicates
+  distinct(Subject, Region, Motivation, Valence, .keep_all = TRUE)
+
+
+# Fit the linear mixed-effects model
+ofc_model <- lmer(Asymmetry_Score ~ Motivation * Valence + (1 | Subject), data = ofc_data)
+```
+
+```{r}
+ofc_side_data <- side_data_cleaned |> 
+  filter(Region == "Orbital Frontal")
+# dlpfc_side_data ## Each subject (23), each condition (2x2), each side (2) = 184 rows
+
+## Fit model that includes side
+side_ofc_model <- lmer(Mean_Value ~ Side * Motivation * Valence + (1 | Subject), data = ofc_side_data)
+```
+
+
+### Main effects and 2-way interaction
+
+- Main effect of Motivation?
+- Main effect of Valence?
+- Interaction of Motivation and Valence?
+
+```{r}
+# Main effect of motivation
+# Approach - avoidance: a positive number means that appraoch is more rightward than avoidance; a negative number means that avoidance is more rightward than approach (approach is more leftward)
+
+main_motivation <- ofc_model |> emmeans(specs = "Motivation") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+main_motivation |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table(
+    str_c("OFC: Main effect of motivation (controlling for valence)"),
+    groupname_col = "bas_var") |> 
+  tab_footnote("p-values are one-sided.  A negative number means that approach is more leftward than avoidance.", locations = NULL)
+```
+
+
+```{r}
+# Main effect of valence
+# Negative - Positive: a negative number means that positive valence is more leftward than negative valence
+main_motivation <- ofc_model |> emmeans(specs = "Valence") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+main_motivation |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table(
+    str_c("OFC: Main effect of valence (controlling for motivation)"),
+    groupname_col = "bas_var") |> 
+  tab_footnote("p-values are one-sided.A negative number means that positive valence is more leftward than negative valence.", locations = NULL)
+```
+
+```{r}
+## Interaction of Motivation by Valence
+## Compare models with and without interaction
+
+# The full model with the interaction
+ofc_model_full <- lmer(Asymmetry_Score ~ Motivation * Valence + (1 | Subject), data = ofc_data)
+
+# The reduced model without the interaction
+ofc_model_reduced <- lmer(Asymmetry_Score ~ Motivation + Valence + (1 | Subject), data = ofc_data)
+
+# Perform an ANOVA to compare the models
+anova_result <- anova(ofc_model_reduced, ofc_model_full)
+
+# Print the ANOVA result
+anova_result |> rename(p.value = `Pr(>Chisq)`) |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("ofc: Interaction of Motivation by Valence (ANOVA model comparison)") |> 
+  tab_footnote("p-values are one-sided.", locations = NULL)
+
+# Compute estimated marginal means (emmeans) for the interaction
+emmeans_interaction <- emmeans(ofc_model_full, ~ Motivation * Valence)
+
+# Test significance of the interaction
+interaction_test <- contrast(emmeans_interaction, interaction = "pairwise") |> 
+  summary(infer = T)
+
+# Display the emmeans results
+#print(emmeans_interaction) |> gt(caption = c("Estimated Marginal Means for the Interaction (Orbital Frontal)","Note: Positive Estimates Indicate Rightward Asymmetry"))
+
+# Display the interaction results
+interaction_test |> as_tibble() |> 
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("OFC: Interaction of Motivation by Valence (emmeans: compare estimate to zero)") |>
+    tab_footnote(
+      "p-values are one-sided. A positive estimate means ?",
+    locations = NULL)
+```
+
+```{r}
+## Effect of Motivation within each Valence condition
+em <- ofc_model |> emmeans(specs = "Motivation", by = "Valence") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+em |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table( str_c("OFC: Effect of Motivation by Valence condition")  )|> 
+  tab_footnote("p-values are one-sided.  A negative number means that approach is more leftward than avoidance.", locations = NULL)
+```
+
+```{r}
+## Effect of Valence within each Motivation condition
+em <- ofc_model |> emmeans(specs = "Valence", by = "Motivation") |> 
+  contrast("pairwise") |> summary(infer = T)
+
+em |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |> 
+  pretty_table( str_c("OFC: Effect of Valence by Motivation condition")  )|> 
+  tab_footnote("p-values are one-sided.  A negative number means that positive valence is more leftward than negative valence.", locations = NULL)
+```
+
+### Estimated Asymmetry scores by condition
+
+Estimate:
+
+- What is the asymmetry score for Approach motivation?
+- What is the asymmetry score for Avoidance motivation?
+- What is the asymmetry score for Positive Valence?
+- What is the asymmetry score for Negative Valence?
+
+- What is the asymmetry score for Approach-Positive?
+- What is the asymmetry score for Approach-Negative?
+- What is the asymmetry score for Avoid-Positive?
+- What is the asymmetry score for Avoid-Negative?
+
+```{r}
+## Pull Asymmetry scores for Approach and Avoidance Motivation
+# Estimate laterality of approach, and avoidance
+summary(emmeans(ofc_model, "Motivation"), infer=TRUE) |>
+  as_tibble() |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("OFC: Estimated laterality for Approach and Avoidance") |>
+    tab_footnote(
+      "p-values are one-sided. A positive estimate means rightward asymmetry",
+    locations = NULL)
+```
+
+```{r}
+## Pull Asymmetry scores for Positive and Negative Valence
+# Estimate laterality of postive, and negative valence
+summary(emmeans(ofc_model, "Valence"), infer=TRUE) |>
+  as_tibble() |>
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("OFC: Estimated laterality for Positive and Negative Valence") |>
+    tab_footnote(
+      "p-values are one-sided. A positive estimate means rightward asymmetry",
+    locations = NULL)
+```
+
+```{r}
+## Pull asymmetry scores for each of the four conditions
+# Summarize the model (Show the estimated effect for each of the four conditions - approach-pos etc)
+ofc_model_summary <- summary(emmeans(ofc_model, "Motivation", "Valence"), infer=TRUE)
+ofc_model_summary|> 
+  dplyr::mutate(p.value = p.value/2) |> 
+  format_p.value() |>
+  pretty_table("OFC: Estimates for each contrast") |>
+  tab_footnote(
+    "p-values are one-sided. Positive estimates indicate rightward asymmetry.",
+    locations = NULL)
+```
+
+Estimate (1 level more granular)
+- What are the right and left ROI scores for Approach motivation?
+- What are the right and left ROI scores for Avoidance motivation?
+- What are the right and left ROI scores for Positive Valence?
+- What are the right and left ROI scores for Negative motivation?
+
+```{r}
+side_ofc_model |> emmeans(spec = c("Motivation", "Side")) |> 
+  summary(infer = T) |> 
+    format_p.value() |>
+  pretty_table("OFC: Estimated mean ROI signal, by side and motivation condition") |>
+  tab_footnote(
+    "p-values are two-sided. Positive estimates indicate positive BOLD signal.",
+    locations = NULL)
+```
+
+```{r}
+side_ofc_model |> emmeans(spec = c("Valence", "Side")) |> 
+  summary(infer = T) |> 
+    format_p.value() |>
+  pretty_table("OFC: Estimated mean ROI signal, by side and valence condition") |>
+  tab_footnote(
+    "p-values are two-sided. Positive estimates indicate positive BOLD signal.",
+    locations = NULL)
+```
+
+- What are the right and left ROI scores for Approach-Positive?
+- What are the right and left ROI scores for Approach-Negative?
+- What are the right and left ROI scores for Avoid-Positive?
+- What are the right and left ROI scores for Avoid-Negative?
+
+```{r}
+side_ofc_model |> emmeans(spec = c("Motivation", "Valence", "Side")) |> 
+  summary(infer = T) |> 
+  arrange(Motivation, Valence, Side) |> 
+    format_p.value() |>
+  pretty_table("OFC: Estimated mean ROI signal, by side, motivation, and valence condition") |>
+  tab_footnote(
+    "p-values are two-sided. Positive estimates indicate positive BOLD signal.",
+    locations = NULL)
+```
+
+:::
+
+## DLPFC vs. OFC
+
+- Interaction of Region * Motivation
+- Interaction of Region * Motivation * Valence
+```{r, message=FALSE, warning=FALSE}
+# STEP 5: Combined Region Analysis
+# Fit the combined model including Region, Motivation, and Valence
+combined_model <- lmer(
+  Asymmetry_Score ~ Region * Motivation * Valence + (1 | Subject),
+  data = roi_asym_cleaned)
+
+## Two-way model
+# Compute emmeans for Region, Motivation, and Valence
+region_emmeans <- emmeans(combined_model, ~ Region * Motivation)
+
+# Test the interaction between Region and Motivation
+region_motivation_interaction <- contrast(region_emmeans, interaction = "consec") |> 
+  summary(infer = T)
+
+# Print the interaction results
+region_motivation_interaction |>
+  as_tibble() |> 
+  dplyr::mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table("Interaction of Region and Motivation (Averaged Over Valence)") |>
+  tab_footnote(
+    "p-values are one-sided. Negative Estimates Indicate that approach is more left-lateralized for DLPFC.",
+    locations = NULL
+  )
+
+
+## Three-way model
+# Compute emmeans for Region, Motivation, and Valence
+region_emmeans <- emmeans(combined_model, ~ Region * Motivation * Valence)
+
+# Test the interaction between Region and Motivation
+region_motivation_interaction <- contrast(region_emmeans, interaction = "consec") |> 
+  summary(infer = T)
+
+# Print the interaction results
+region_motivation_interaction |> 
+  as_tibble() |> 
+    dplyr::mutate(p.value = p.value / 2) |>
+  format_p.value() |>
+  pretty_table("Interaction of Region by Motivation by Valence") |>
+  tab_footnote(
+    "p-values are one-sided. Negative Estimates Indicate ?",
+    locations = NULL
+  )
+```
+
+## Plots
+
+::: panel-tabset :::
+
+```{r}
+## Define plot colors
+plot_colors = c("#EE6677", "#4477AA", "#CCBB44", "#66CCEE",
+                "#AA3377", "#228833", "#BBBBBB")
+```
+
+### Asymmetry by condition
+
+#### DLPFC
+
+```{r}
+## Make new plots - DLPFC
+fig_path_var <- here::here(FIG_DIR, "asym_dplfc_by_motivation_valence_sideways.png")
+
+## Make plot for DLPFC
+REGION <- "DLPFC"
+plot_data_participants <- dlpfc_data |> 
+  rename(estimate = Asymmetry_Score) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Avoidance", "Approach")))
+plot_data <- summary(emmeans(dlpfc_model, "Motivation", "Valence"), infer=TRUE) |> 
+  as_tibble() |> 
+  rename(estimate = emmean) |>
+  ## Refactor to control order of levels
+    mutate(Motivation = factor(Motivation, levels = c("Avoidance", "Approach"))) |>
+    mutate(Valence = factor(Valence, levels = c("Positive", "Negative")))
+
+## Prepare data to annotate first facet
+data_facet1 <- plot_data |>
+  filter(Valence == "Positive")
+
+## Refactor to put Approach on the top
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = estimate,
+              y = Motivation,
+              fill = Motivation, color = Motivation
+            )) +
+   # Add individual data points
+  geom_jitter(
+  data = plot_data_participants,
+    position = position_jitterdodge(jitter.height = 0, jitter.width = .1),
+    size = 2,
+    alpha = 0.1, show.legend = F
+  ) +
+  geom_vline(xintercept = 0,
+             color = "gray50",
+             linewidth = .5) +
+  geom_linerange(
+    aes(xmin = upper.CL, xmax = lower.CL),
+    color = "gray30",
+    position = position_nudge(y = .12),
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 4,
+    position = position_nudge(y = .12)
+  )  +
+  facet_wrap(~ Valence, nrow = 2, strip.position = "left") +
+  scale_fill_manual(values = plot_colors[c(2, 1)]) +
+  scale_color_manual(values = plot_colors[c(2, 1)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_x_continuous(breaks = seq(-3, 3, .1),
+                     minor_breaks = seq(-3 , 3, .05)) +
+  coord_cartesian(xlim = c(-.7, .7)) +
+  geom_text(label = str_c("← Left > Right"), 
+    data = data_facet1,
+    color = "gray50",
+    y = 1.5,
+    x = -.7,
+    hjust = "left",
+    size = 3
+  ) +
+    geom_text(
+     label = str_c("Right > Left →"),
+    data = data_facet1,
+    color = "gray50",
+    y = 1.5,
+    x = .7,
+    hjust = "right", size = 3
+    ) +
+  labs(title = REGION, y = "", x = "fMRI BOLD Asymmetry")
+
+
+g <- g |> gg_style() +
+    theme(
+      aspect.ratio = 1 / 4,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 5, height = 3)
+include_graphics(fig_path_var)
+```
+
+#### OFC
+
+```{r}
+## Make new plots - OFC
+fig_path_var <- here::here(FIG_DIR, "asym_ofc_by_motivation_valence_sideways.png")
+
+## Make plot for DLPFC
+REGION <- "OFC"
+plot_data_participants <- ofc_data |> 
+  rename(estimate = Asymmetry_Score) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Avoidance", "Approach")))
+plot_data <- summary(emmeans(ofc_model, "Motivation", "Valence"), infer=TRUE) |> 
+  as_tibble() |> 
+  rename(estimate = emmean) |>
+  ## Refactor to control order of levels
+    mutate(Motivation = factor(Motivation, levels = c("Avoidance", "Approach"))) |>
+    mutate(Valence = factor(Valence, levels = c("Positive", "Negative")))
+
+## Prepare data to annotate first facet
+data_facet1 <- plot_data |>
+  filter(Valence == "Positive")
+
+## Refactor to put Approach on the top
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = estimate,
+              y = Motivation,
+              fill = Motivation, color = Motivation
+            )) +
+   # Add individual data points
+  geom_jitter(
+  data = plot_data_participants,
+    position = position_jitterdodge(jitter.height = 0, jitter.width = .1),
+    size = 2,
+    alpha = 0.1, show.legend = F
+  ) +
+  geom_vline(xintercept = 0,
+             color = "gray50",
+             linewidth = .5) +
+  geom_linerange(
+    aes(xmin = upper.CL, xmax = lower.CL),
+    color = "gray30",
+    position = position_nudge(y = .12),
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 4,
+    position = position_nudge(y = .12)
+  )  +
+  facet_wrap(~ Valence, nrow = 2, strip.position = "left") +
+  scale_fill_manual(values = plot_colors[c(2, 1)]) +
+  scale_color_manual(values = plot_colors[c(2, 1)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_x_continuous(breaks = seq(-3, 3, .1),
+                     minor_breaks = seq(-3 , 3, .05)) +
+  coord_cartesian(xlim = c(-.7, .7)) +
+  # geom_text(label = str_c("← Left > Right"), 
+  #   data = data_facet1,
+  #   color = "gray50",
+  #   y = 1.5,
+  #   x = -.7,
+  #   hjust = "left",
+  #   size = 3
+  # ) +
+  #   geom_text(
+  #    label = str_c("Right > Left →"),
+  #   data = data_facet1,
+  #   color = "gray50",
+  #   y = 1.5,
+  #   x = .7,
+  #   hjust = "right", size = 3
+  #   ) +
+  labs(title = REGION, y = "", x = "fMRI BOLD Asymmetry")
+
+
+g <- g |> gg_style() +
+    theme(
+      aspect.ratio = 1 / 4,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 5, height = 3)
+include_graphics(fig_path_var)
+```
+
+### Plot estimated main effects
+
+```{r}
+## Pull Asymmetry scores for Approach and Avoidance Motivation
+# Estimate laterality of approach, and avoidance
+d_plot_data <- summary(emmeans(dlpfc_model, "Motivation"), infer=TRUE) |> 
+  as_tibble() |> 
+  dplyr::mutate(Region = "DLPFC",
+                var = "Motivation")
+
+o_plot_data <- summary(emmeans(ofc_model, "Motivation"), infer=TRUE) |> 
+  as_tibble() |>
+  dplyr::mutate(Region = "OFC",
+                var = "Motivation")
+
+mot_plot_data <- bind_rows(d_plot_data, o_plot_data)
+```
+
+```{r}
+## Pull Asymmetry scores for Positive and Negative Valence
+# Estimate laterality of approach, and avoidance
+d_plot_data <- summary(emmeans(dlpfc_model, "Valence"), infer=TRUE) |> 
+  as_tibble()|> 
+  dplyr::mutate(Region = "DLPFC",
+                var = "Valence")
+
+o_plot_data <- summary(emmeans(ofc_model, "Valence"), infer=TRUE) |> 
+  as_tibble() |>
+  dplyr::mutate(Region = "OFC",
+                var = "Valence")
+
+val_plot_data <- bind_rows(d_plot_data, o_plot_data)
+```
+
+#### DLPFC
+
+```{r}
+fig_path_var <- here::here(FIG_DIR, "asym_main_effects_dlpfc.png")
+
+## Make plot for DLPFC
+REGION <- "DLPFC"
+
+## Create combined dataframe, with motivation and valence estimates
+plot_data <- bind_rows(mot_plot_data |> dplyr::mutate(Condition = Motivation),
+                       val_plot_data |> dplyr::mutate(Condition = Valence)) |> 
+  select(Region, var, Condition, emmean, SE, df, lower.CL, upper.CL, t.ratio, p.value, everything()) |> 
+  arrange(Region, Condition) |> 
+  ## Refactor to control order of levels
+    mutate(Motivation = factor(Motivation, levels = c("Avoidance", "Approach"))) |>
+    mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  mutate(Condition = factor(Condition, levels = c("Negative", "Positive", "Avoidance", "Approach"))) |> 
+  rename(estimate = emmean) |> 
+  filter(Region == REGION)
+
+## Prepare data to annotate first facet
+data_facet1 <- plot_data |>
+  filter(var == "Valence")
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = estimate,
+              y = Condition,
+              fill = Condition, color = Condition
+            )) +
+   # Add individual data points
+  geom_vline(xintercept = 0,
+             color = "gray50",
+             linewidth = .5) +
+  geom_linerange(
+    aes(xmin = upper.CL, xmax = lower.CL),
+    color = "gray30",
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 4,
+  )  +
+  #facet_wrap(~ var, nrow = 2, strip.position = "left") +
+  scale_fill_manual(values = plot_colors[c(4, 3, 2, 1)]) +
+  scale_color_manual(values = plot_colors[c(4, 3, 2, 1)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_x_continuous(breaks = seq(-3, 3, .1),
+                     minor_breaks = seq(-3 , 3, .05)) +
+  coord_cartesian(xlim = c(-.4, .4)) +
+  geom_text(label = str_c("← Left > Right"), 
+    data = data_facet1,
+    color = "gray50",
+    y = 1.5,
+    x = -.4,
+    hjust = "left",
+    size = 3
+  ) +
+    geom_text(
+     label = str_c("Right > Left →"),
+    data = data_facet1,
+    color = "gray50",
+    y = 1.5,
+    x = .4,
+    hjust = "right", size = 3
+    ) +
+  labs(title = REGION, y = "", x = "fMRI BOLD Asymmetry")
+
+
+g <- g |> gg_style() +
+    theme(
+      aspect.ratio = 1 / 4,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 5, height = 3)
+include_graphics(fig_path_var)
+```
+
+#### OFC
+
+```{r}
+fig_path_var <- here::here(FIG_DIR, "asym_main_effects_ofc.png")
+
+## Make plot for DLPFC
+REGION <- "OFC"
+
+## Create combined dataframe, with motivation and valence estimates
+plot_data <- bind_rows(mot_plot_data |> dplyr::mutate(Condition = Motivation),
+                       val_plot_data |> dplyr::mutate(Condition = Valence)) |> 
+  select(Region, var, Condition, emmean, SE, df, lower.CL, upper.CL, t.ratio, p.value, everything()) |> 
+  arrange(Region, Condition) |> 
+  ## Refactor to control order of levels
+    mutate(Motivation = factor(Motivation, levels = c("Avoidance", "Approach"))) |>
+    mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  mutate(Condition = factor(Condition, levels = c("Negative", "Positive", "Avoidance", "Approach"))) |> 
+  rename(estimate = emmean) |> 
+  filter(Region == REGION)
+
+## Prepare data to annotate first facet
+data_facet1 <- plot_data |>
+  filter(var == "Valence")
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = estimate,
+              y = Condition,
+              fill = Condition, color = Condition
+            )) +
+   # Add individual data points
+  geom_vline(xintercept = 0,
+             color = "gray50",
+             linewidth = .5) +
+  geom_linerange(
+    aes(xmin = upper.CL, xmax = lower.CL),
+    color = "gray30",
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 4,
+  )  +
+  #facet_wrap(~ var, nrow = 2, strip.position = "left") +
+  scale_fill_manual(values = plot_colors[c(4, 3, 2, 1)]) +
+  scale_color_manual(values = plot_colors[c(4, 3, 2, 1)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_x_continuous(breaks = seq(-3, 3, .1),
+                     minor_breaks = seq(-3 , 3, .05)) +
+  coord_cartesian(xlim = c(-.4, .4)) +
+  geom_text(label = str_c("← Left > Right"), 
+    data = data_facet1,
+    color = "gray50",
+    y = 2.5,
+    x = -.4,
+    hjust = "left",
+    size = 3
+  ) +
+    geom_text(
+     label = str_c("Right > Left →"),
+    data = data_facet1,
+    color = "gray50",
+    y = 2.5,
+    x = .4,
+    hjust = "right", size = 3
+    ) +
+  labs(title = REGION, y = "", x = "fMRI BOLD Asymmetry")
+
+
+g <- g |> gg_style() +
+    theme(
+      aspect.ratio = 1 / 4,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 5, height = 3)
+include_graphics(fig_path_var)
+```
+
+### Plot ROI activation by Side
+
+#### DLPFC
+
+```{r}
+## Add plot that shows only estimates, not per-subject data.
+## DLPFC
+fig_path_var <- here::here(FIG_DIR, "ROI_signal_by_side_dlpfc_est.png")
+
+## Make plot for DLPFC
+REGION <- "DLPFC"
+
+## Input data: model estimates
+plot_data <- side_dlpfc_model |> emmeans(spec = c("Motivation", "Valence", "Side")) |> 
+  summary(infer = T) |> 
+  as_tibble() |> 
+  rename(estimate = emmean) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Approach", "Avoidance"))) |> 
+  mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  select(Side, Motivation, Valence, estimate, everything())
+
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = Motivation,
+              y = estimate,
+              fill = Motivation, color = Motivation
+            )) +
+  geom_hline(yintercept = 0,
+             color = "gray50",
+             linewidth = .5)+
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  geom_linerange(
+    aes(ymin = lower.CL, ymax = upper.CL),
+    color = "gray30",
+    position = position_nudge(x = 0),
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 4,
+    alpha = 1,
+    position = position_nudge(x = 0)
+  ) +
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  scale_fill_manual(values = plot_colors[c(1, 2)]) +
+  scale_color_manual(values = plot_colors[c(1, 2)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_y_continuous(breaks = seq(-3, 3, .2),
+                     minor_breaks = seq(-3 , 3, .1)) +
+  coord_cartesian(ylim = c(-.5, .5)) +
+  labs(title = REGION, x = "", y = "fMRI BOLD signal change vs. Baseline")
+
+g <- g |> gg_style() +
+      theme(
+      aspect.ratio = 1.2 / 1,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 6, height = 5)
+include_graphics(fig_path_var)
+```
+
+```{r}
+## DLPFC
+fig_path_var <- here::here(FIG_DIR, "ROI_signal_by_side_dlpfc.png")
+
+## Make plot for DLPFC
+REGION <- "DLPFC"
+
+## Input data: participant scores
+plot_data_participants <- dlpfc_side_data |> 
+  select(-ROI, -Asymmetry_Score, -Region) |> 
+  rename(estimate = Mean_Value) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Approach", "Avoidance"))) |>
+  mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  select(Subject, Side, Motivation, Valence, estimate, everything())
+
+## Input data: model estimates
+plot_data <- side_dlpfc_model |> emmeans(spec = c("Motivation", "Valence", "Side")) |> 
+  summary(infer = T) |> 
+  as_tibble() |> 
+  rename(estimate = emmean) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Approach", "Avoidance"))) |> 
+  mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  select(Side, Motivation, Valence, estimate, everything())
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = Motivation,
+              y = estimate,
+              fill = Motivation, color = Motivation
+            )) +
+   # Add individual data points
+  geom_jitter(
+  data = plot_data_participants,
+    position = position_jitterdodge(jitter.height = 0, jitter.width = .1),
+    size = 2,
+    alpha = 0.5, show.legend = F
+  ) +
+  geom_hline(yintercept = 0,
+             color = "gray50",
+             linewidth = .5)+
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  geom_linerange(
+    aes(ymin = lower.CL, ymax = upper.CL),
+    color = "gray30",
+    position = position_nudge(x = .15),
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 2,
+    alpha = 1,
+    position = position_nudge(x = .15)
+  ) +
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  scale_fill_manual(values = plot_colors[c(1, 2)]) +
+  scale_color_manual(values = plot_colors[c(1, 2)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_y_continuous(breaks = seq(-3, 3, .5),
+                     minor_breaks = seq(-3 , 3, .5)) +
+  #coord_cartesian(ylim = c(-2, 3)) +
+  labs(title = REGION, x = "", y = "fMRI BOLD signal change vs. Baseline")
+
+g <- g |> gg_style() +
+      theme(
+      aspect.ratio = 1.2 / 1,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 6, height = 5)
+include_graphics(fig_path_var)
+```
+
+#### OFC
+
+```{r}
+## Add plot that shows only estimates, not per-subject data.
+## OFC
+fig_path_var <- here::here(FIG_DIR, "ROI_signal_by_side_ofc_est.png")
+
+## Make plot for DLPFC
+REGION <- "OFC"
+
+## Input data: model estimates
+plot_data <- side_ofc_model |> emmeans(spec = c("Motivation", "Valence", "Side")) |> 
+  summary(infer = T) |> 
+  as_tibble() |> 
+  rename(estimate = emmean) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Approach", "Avoidance"))) |> 
+  mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  select(Side, Motivation, Valence, estimate, everything())
+
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = Motivation,
+              y = estimate,
+              fill = Motivation, color = Motivation
+            )) +
+  geom_hline(yintercept = 0,
+             color = "gray50",
+             linewidth = .5)+
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  geom_linerange(
+    aes(ymin = lower.CL, ymax = upper.CL),
+    color = "gray30",
+    position = position_nudge(x = 0),
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 4,
+    alpha = 1,
+    position = position_nudge(x = 0)
+  ) +
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  scale_fill_manual(values = plot_colors[c(1, 2)]) +
+  scale_color_manual(values = plot_colors[c(1, 2)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_y_continuous(breaks = seq(-3, 3, .2),
+                     minor_breaks = seq(-3 , 3, .1)) +
+  coord_cartesian(ylim = c(-.5, .5)) +
+  labs(title = REGION, x = "", y = "fMRI BOLD signal change vs. Baseline")
+
+g <- g |> gg_style() +
+      theme(
+      aspect.ratio = 1.2 / 1,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 6, height = 5)
+include_graphics(fig_path_var)
+```
+
+```{r}
+## OFC
+fig_path_var <- here::here(FIG_DIR, "ROI_signal_by_side_ofc.png")
+
+## Make plot for DLPFC
+REGION <- "OFC"
+
+## Input data: participant scores
+plot_data_participants <- ofc_side_data |> 
+  select(-ROI, -Asymmetry_Score, -Region) |> 
+  rename(estimate = Mean_Value) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Approach", "Avoidance"))) |>
+  mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  select(Subject, Side, Motivation, Valence, estimate, everything())
+
+## Input data: model estimates
+plot_data <- side_ofc_model |> emmeans(spec = c("Motivation", "Valence", "Side")) |> 
+  summary(infer = T) |> 
+  as_tibble() |> 
+  rename(estimate = emmean) |> 
+  mutate(Motivation = factor(Motivation, levels = c("Approach", "Avoidance"))) |> 
+  mutate(Valence = factor(Valence, levels = c("Positive", "Negative"))) |>
+  select(Side, Motivation, Valence, estimate, everything())
+
+g <- ggplot(data = plot_data,
+            aes(
+              x = Motivation,
+              y = estimate,
+              fill = Motivation, color = Motivation
+            )) +
+   # Add individual data points
+  geom_jitter(
+  data = plot_data_participants,
+    position = position_jitterdodge(jitter.height = 0, jitter.width = .1),
+    size = 2,
+    alpha = 0.5, show.legend = F
+  ) +
+  geom_hline(yintercept = 0,
+             color = "gray50",
+             linewidth = .5)+
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  geom_linerange(
+    aes(ymin = lower.CL, ymax = upper.CL),
+    color = "gray30",
+    position = position_nudge(x = .15),
+    linewidth = .5
+  ) +
+  geom_point(
+    color = "black",
+    shape = 23,
+    show.legend = F,
+    size = 2,
+    alpha = 1,
+    position = position_nudge(x = .15)
+  ) +
+  facet_grid(rows = vars(Valence), cols = vars(Side)) +
+  scale_fill_manual(values = plot_colors[c(1, 2)]) +
+  scale_color_manual(values = plot_colors[c(1, 2)]) +
+  ## CONFIG: Set axis range and breaks
+  scale_y_continuous(breaks = seq(-3, 3, .5),
+                     minor_breaks = seq(-3 , 3, .5)) +
+  coord_cartesian(ylim = c(-1, 3)) +
+  labs(title = REGION, x = "", y = "fMRI BOLD signal change vs. Baseline")
+
+g <- g |> gg_style() +
+      theme(
+      aspect.ratio = 1.2 / 1,
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_text(margin = margin(t = 8, unit = "pt")),
+      strip.background = element_rect(fill = "gray99", color = "gray50"),
+      strip.placement = "outside",
+      panel.grid.minor = element_line(color = "gray92", linewidth = .2),
+      panel.grid.major.y = element_line(color = "gray92", linewidth = .4),
+      panel.grid.major.x = element_line(color = "gray92", linewidth = .2),
+      panel.border = element_rect(fill = NA, color = "gray50"),
+    )
+
+# Save the plot (optional)
+ggsave(fig_path_var, width = 6, height = 5)
+include_graphics(fig_path_var)
+```
+
+:::
+
+:::
