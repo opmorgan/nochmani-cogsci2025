@@ -58,7 +58,14 @@ To set up the virtual environment with python dependencies, navigate to the anal
   - To run mriqc on a specific subject, run `fmriprep_subject.sh {sub-id}`
   - To edit parameters such as RAM and threads allocated to mriqc, edit `fmriprep_subject.sh`
 - `fmri_scripts/4_spm_scripts/`: create 1st level contrast maps
+  - `script_0_smooth.m`: smooth pre-processed data
+  - `script_1_create_multiple_conditions.m`: create matlab objects specifying event onset for each subject, using the `.tsv` files created by `beh_scripts/analysis_beh/2_create_events_tsv.R`. These matlab objects can be used in SPM's 1st level specification.
+  - `script_2_1st_level_spec.m`: Specify the 1st level model design for each subject
+  - `script_3_prepare_contrast_matrices.m`: Prepare contrast matrices for each subject
+  - `script_4_1st_level_contrasts.m` Estimate 1st level contrasts (those specified by `script_3`)
+  - `script_5_2nd_level_contrasts.m` Specify and estimate 2nd level, whole-brain contrasts
 - `fmri_scripts/5_roi_scripts/`: extract summary values from ROIs
+  - See `fmri_scripts/5_roi_scripts/README.txt`
 
 ## Analyze ROI and survey data
 - `beh_scripts/analysis_roi/1a_analyze_roi_score.qmd`: Run ROI laterality analyses
