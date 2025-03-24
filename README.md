@@ -35,6 +35,7 @@ R dependencies can be installed with [renv](https://rstudio.github.io/renv/artic
 ## Preprocess and analyze fMRI data
 ### Environment and dependencies
 System dependencies: `bash`, `python 3.10`, `MATLAB 24.2.0`, `SPM12`, `docker`, `mriqc 24.0.2`, `quarto` or `Rstudio`
+
 Python dependencies for individual scripts are specified in the corresponding `requirements.txt` file (for example, `fmriprep-docker v24.0.1` is listed in the file `fmri_scripts/3_fmriprep_scripts/requirements.txt`)
 These scripts have been tested in MacOS 15 (Sequoia).
 To set up the virtual environment with python dependencies, navigate to the analysis subdirectory and install packages listed in requirements.txt (recommended: use [venv](https://docs.python.org/3/library/venv.html)). For example, to set up the environment for fmriprep preprocessing:
