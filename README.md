@@ -5,7 +5,7 @@ Preregistration: https://aspredicted.org/khc9-m5my.pdf
 
 # Experiment script and stimuli
 
-The folder "experiment_scripts" contains experiment scripts and stimuli (see README: experiment_scripts/README.md).
+The folder `experiment_scripts/` contains experiment scripts and stimuli (see README: `experiment_scripts/README.md`).
 
 # Data
 Behavioral, survey, and summary fMRI data are in beh_scripts/data.
