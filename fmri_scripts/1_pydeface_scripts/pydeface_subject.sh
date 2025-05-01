@@ -4,13 +4,13 @@
 # pydeface 2.0.2
 # (Use virtual environment: .../code/nochmani-scripts-git/fmri_scripts/pydeface_scripts/python3-env)
 
+source ../config.sh
+
 subject=$1
 
-PROJ_DIR=$HOME/proj/SSH
-BIDS_DIR=${PROJ_DIR}/BIDS_dataset
-IN_DIR=${PROJ_DIR}/anat_with_face
-OUT_DIR=${BIDS_DIR}/${subject}/anat
-
+BIDS_DIR=${BIDS_DIR}
+IN_DIR=${ANAT_DIR}
+OUT_DIR=${BIDS_DIR}/${subject}/ana
 
 if [ ! -d ${OUT_DIR} ]; then
   mkdir -p ${OUT_DIR}

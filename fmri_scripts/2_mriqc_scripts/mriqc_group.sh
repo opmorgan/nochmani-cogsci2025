@@ -1,7 +1,8 @@
 #!/bin/bash
 
+source ../config.sh
 ## User inputs:
-bids_root_dir=$HOME/proj/SSH/BIDS_dataset
+bids_root_dir=${BIDS_DIR}
 nthreads=4
 mem=6 #gb
 
@@ -16,7 +17,7 @@ echo ""
 echo "Running MRIQC group summary..."
 echo ""
 
-docker run -it --rm -v $bids_root_dir:/data:ro -v $mriqc_dir:/out \
+docker run --platform linux/amd64 -it --rm -v $bids_root_dir:/data:ro -v $mriqc_dir:/out \
 nipreps/mriqc:24.0.2 /data /out \
 group \
 --no-sub \
@@ -26,3 +27,5 @@ group \
 --ants-nthreads $nthreads \
 -v \
 -w $mriqc_dir
+
+

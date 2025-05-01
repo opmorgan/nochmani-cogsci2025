@@ -1,7 +1,8 @@
 #!/bin/bash
+source ../config.sh
 
 ## User inputs:
-bids_root_dir=$HOME/proj/SSH/BIDS_dataset
+bids_root_dir=${BIDS_DIR}
 subj=$1
 nthreads=4
 mem=6 #gb

@@ -5,10 +5,15 @@ subj=$1
 NTHREADS=6
 MEM_MB=12000 #mb
 
-WORK_DIR=$HOME/proj/SSH/tmp/fmriprep_workflow_${subj}/work
-BIDS_ROOT_DIR=$HOME/proj/SSH/BIDS_dataset
+source ../config.sh
+
+WORK_DIR=$HOME/proj/SSH/tmp
+BIDS_ROOT_DIR=${BIDS_DIR}
 OUT_DIR=${BIDS_ROOT_DIR}/derivatives/fmriprep-fmap
-FS_LICENSE_PATH=$HOME/proj/SSH/fslicense.txt
+
+# Make sure FS_LICENSE_PATH is set
+FS_LICENSE_PATH=${PROJ_DIR}/SSH/fslicense.txt
+
 
 ## Make working dir, output dir:
 if [ ! -d ${WORK_DIR} ]; then
