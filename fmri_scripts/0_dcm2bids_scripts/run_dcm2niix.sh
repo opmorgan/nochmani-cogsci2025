@@ -41,21 +41,21 @@ then
 	echo Converted fieldmap: Nochmani, pepolar 0.
 fi
 
-if [ ${do_fmap_nochmani_a} = y ]
+if [ ${do_fmap_nochmani_b} = y ]
 then
 	echo Converting fieldmap: Nochmani, pepolar 1...
 	dcm2niix -f "${subject}_acq-nochmani_dir-AP_epi" -p ${phillips} -v ${verbose} -z ${compress} --progress ${progress} -o "${fmap_dir}" "${dicom_dir}/${fmap_nochmani_dir[1]}"
 	echo Converted fieldmap: Nochmani, pepolar 1.
 fi
 
-if [ ${do_fmap_nochmani_a} = y ]
+if [ ${do_fmap_tap_a} = y ]
 then
 	echo Converting fieldmap: Tap, pepolar 0...
 	dcm2niix -f "${subject}_acq-tap_dir-PA_epi" -p ${phillips} -v ${verbose} -z ${compress} --progress ${progress} -o "${fmap_dir}" "${dicom_dir}/${fmap_tap_dir[0]}"
 	echo Converted fieldmap: Tap, pepolar 0.
 fi
 
-if [ ${do_fmap_nochmani_a} = y ]
+if [ ${do_fmap_tap_b} = y ]
 then
 	echo Converting fieldmap: Tap, pepolar 1...
 	dcm2niix -f "${subject}_acq-tap_dir-AP_epi" -p ${phillips} -v ${verbose} -z ${compress} --progress ${progress} -o "${fmap_dir}" "${dicom_dir}/${fmap_tap_dir[1]}"
