@@ -10,7 +10,7 @@ subject=$1
 
 BIDS_DIR=${BIDS_DIR}
 IN_DIR=${ANAT_DIR}
-OUT_DIR=${BIDS_DIR}/${subject}/ana
+OUT_DIR=${BIDS_DIR}/${subject}/anat
 
 if [ ! -d ${OUT_DIR} ]; then
   mkdir -p ${OUT_DIR}
