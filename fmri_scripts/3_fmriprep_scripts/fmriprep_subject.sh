@@ -12,7 +12,7 @@ BIDS_ROOT_DIR=${BIDS_DIR}
 OUT_DIR=${BIDS_ROOT_DIR}/derivatives/fmriprep-fmap
 
 # Make sure FS_LICENSE_PATH is set
-FS_LICENSE_PATH=${PROJ_DIR}/SSH/fslicense.txt
+FS_LICENSE_PATH=${FSLICENSE_DIR}
 
 
 ## Make working dir, output dir:

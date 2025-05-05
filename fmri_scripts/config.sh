@@ -21,6 +21,8 @@ BIDS_DIR=$(find "$PROJ_DIR" -maxdepth 1 -type d -name "BIDS_dataset*" | head -n 
 
 ANAT_DIR=$(find "$PROJ_DIR" -maxdepth 1 -type d -name "anat_with_face*" | head -n 1)
 
+FSLICENSE_DIR=${PROJ_DIR}
+
 if [ -z "$BIDS_DIR" ] || [ -z "$ANAT_DIR" ]; then
   echo "Error: Could not determine BIDS_DIR or ANAT_DIR."
   exit 1
