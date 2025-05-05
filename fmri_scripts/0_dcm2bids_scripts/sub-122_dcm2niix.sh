@@ -12,7 +12,7 @@ tap_dir=SER00014
 rs_dir=SER00017
 
 # Specify which conversions to run
-do_all=n # must be y/n
+do_all=y # must be y/n
 
 if [ $do_all = y ]
 then
