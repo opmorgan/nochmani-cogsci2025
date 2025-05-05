@@ -1,4 +1,7 @@
 For test01, the main changes are:
+Added a separate requirements.txt as well as config.sh to the file
+
+
 
 In fmri-scripts, please run the following command:
 
