@@ -15,7 +15,7 @@ source ../config.sh
 BIDS_DIR=${BIDS_DIR}
 #dicom_dir_name is passed from sub-XXX_dcm2nixx.sh (as well as mprage_dir, nochnami_dir, tap_dir)
 dicom_dir=${BIDS_DIR}/sourcedata/${subject}/${dicom_dir_name}
-anat_dir=${PROJ_DIR}/anat_with_face_BACKUP/${subject}
+anat_dir=${ANAT_DIR}/${subject}
 func_dir=${BIDS_DIR}/${subject}/func
 fmap_dir=${BIDS_DIR}/${subject}/fmap
 
