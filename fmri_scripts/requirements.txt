@@ -6,7 +6,7 @@ pytz==2024.2
 six==1.17.0
 tzdata==2024.2
 
-# Install dcm2niix from outside, use brew install dcm2niix
+# Install dcm2niix systemwide (the python package may be broken). On MacOS, use brew install dcm2niix
 
 # 1_pydeface (updated with newest shared versions)
 pydeface==2.0.2
